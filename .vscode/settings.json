@@ -1,0 +1,6 @@
+{
+    "particle.targetPlatform": "boron",
+    "particle.targetDevice": "AquaMaster-Garden",
+    "cortex-debug.openocdPath": "${command:particle.getDebuggerOpenocdPath}",
+    "particle.firmwareVersion": "2.1.0"
+}
