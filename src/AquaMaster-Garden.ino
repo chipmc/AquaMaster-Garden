@@ -14,13 +14,14 @@
 //v1.01 - Updated with measurement bug fix
 //v1.02 - Updated to improve ability to connect by increasing waitUntil() to 5 seconds
 //v2.00 - Moved to a non-blocking connecting state
+//v2.01 - Removed line that was restarting the session over and again.  
 
 
 // Particle Product definitions
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(2);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="2.00";
+char currentPointRelease[6] ="2.01";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -426,7 +427,7 @@ void loop()
     }
     else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset
       resetTimeStamp = millis();
-      publishQueue.publish("spark/device/session/end", "", PRIVATE, WITH_ACK);  // If the device times out on the Webhook response, it will ensure a new session is started on next connect
+      // publishQueue.publish("spark/device/session/end", "", PRIVATE, WITH_ACK);  // If the device times out on the Webhook response, it will ensure a new session is started on next connect
       state = ERROR_STATE;                                            // Response timed out
     }
     break;

@@ -20,6 +20,7 @@
 //v1.01 - Updated with measurement bug fix
 //v1.02 - Updated to improve ability to connect by increasing waitUntil() to 5 seconds
 //v2.00 - Moved to a non-blocking connecting state
+//v2.01 - Removed line that was restarting the session over and again.  
 
 
 // Particle Product definitions
@@ -53,11 +54,11 @@ int setWaterThreshold(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 20 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 21 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(2);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="2.00";
+char currentPointRelease[6] ="2.01";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -114,6 +115,9 @@ enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, MEASURING_STATE, WAT
 char stateNames[11][17] = {"Initialize", "Error", "Idle", "Measuring", "Watering", "Reporting", "Connecting State", "Response Wait", "Napping", "Sleeping State" ,"Low Battery"};
 State state = INITIALIZATION_STATE;
 State oldState = INITIALIZATION_STATE;
+
+// For monitoring / debugging, you can uncomment the next line
+SerialLogHandler logHandler(LOG_LEVEL_ALL);
 
 // Battery Conect variables
 // Battery conect information - https://docs.particle.io/reference/device-os/firmware/boron/#batterystate-
@@ -426,15 +430,16 @@ void loop()
 
   case REPORTING_STATE:
     if (state != oldState) publishStateTransition();
+
     if (!sysStatus.connectedStatus) {
       particleConnectionNeeded = true;                                   // Go to connect state to connect and will return from there
       state = CONNECTING_STATE;                                          // Go straight to the connecting state
       break;
     }
+
     if (sysStatus.connectedStatus) {
       if (Time.hour() == sysStatus.openTime) dailyCleanup();          // Once a day, clean house and publish to Google Sheets
       else sendEvent();                                               // Send data to Ubidots but not at opening time as there is nothing to publish
-  
       if (Time.hour() == sysStatus.openTime && sysStatus.openTime==0) sendEvent();    // Need this so we can get 24 hour reporting for non-sleeping devices
 
       webhookTimeStamp = millis();
@@ -459,7 +464,7 @@ void loop()
     }
     else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset
       resetTimeStamp = millis();
-      publishQueue.publish("spark/device/session/end", "", PRIVATE, WITH_ACK);  // If the device times out on the Webhook response, it will ensure a new session is started on next connect
+      // publishQueue.publish("spark/device/session/end", "", PRIVATE, WITH_ACK);  // If the device times out on the Webhook response, it will ensure a new session is started on next connect
       state = ERROR_STATE;                                            // Response timed out
     }
     break;
