@@ -4,10 +4,11 @@
 
 SYSTEM_THREAD(ENABLED);
 
-SerialLogHandler logHandler;
+SerialLogHandler logHandler(LOG_LEVEL_INFO, { // Logging level for non-application messages
+	{ "app.pubq", LOG_LEVEL_TRACE }
+});
 
-retained uint8_t publishQueueRetainedBuffer[2048];
-PublishQueueAsyncRetained publishQueue(publishQueueRetainedBuffer, sizeof(publishQueueRetainedBuffer));
+PublishQueueAsyncPOSIX publishQueue("events");
 
 enum {
 	TEST_IDLE = 0, // Don't do anything
@@ -39,7 +40,11 @@ void publishCounter(bool withAck);
 void publishPaddedCounter(int size);
 
 void setup() {
-	Serial.begin();
+	// For testing purposes, wait 10 seconds before continuing to allow serial to connect
+	// before doing publishQueue.setup() so the debug log messages can be read.
+	waitFor(Serial.isConnected, 10000);
+    delay(1000);
+    
 	Particle.function("test", testHandler);
 	publishQueue.setup();
 }

@@ -21,6 +21,7 @@
 //v1.02 - Updated to improve ability to connect by increasing waitUntil() to 5 seconds
 //v2.00 - Moved to a non-blocking connecting state
 //v2.01 - Removed line that was restarting the session over and again.  
+//v2.02 - Significant change - added Rachio Webhook
 
 
 // Particle Product definitions
@@ -54,7 +55,7 @@ int setWaterThreshold(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 21 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 22 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(2);
 #define DSTRULES isDSTusa
@@ -168,8 +169,6 @@ time_t RTCTime;
 
 // This section is where we will initialize sensor specific variables, libraries and function prototypes
 // Pressure Sensor Variables
-volatile bool sensorDetect = false;                 // This is the flag that an interrupt is triggered
-Timer wateringTimer(1200000, wateringTimerISR, true);     // Watering timer, calls the WateringTimerISR and is a one-shot timer
 Timer awakeTimer(1800000, awakeTimerISR, true);           // 30 minute timer, calles the awakeTimerISR and is one-shot
 
 void setup()                                        // Note: Disconnected Setup()
@@ -281,7 +280,8 @@ void setup()                                        // Note: Disconnected Setup(
 
   if ((Time.hour() >= sysStatus.openTime) && (Time.hour() < sysStatus.closeTime)) { // Park is open let's get ready for the day                                                            
     if (sysStatus.connectedStatus && !Particle.connected()) {         // If the system thinks we are connected, let's make sure that we are
-      particleConnectionNeeded = true;                                    // This may happen if there was an unexpected reset during park open hours
+      particleConnectionNeeded = true;                                // This may happen if there was an unexpected reset during park open hours
+      sysStatus.connectedStatus = false;                              // At least for now this is the right value
     }
     takeMeasurements();                                               // Populates values so you can read them before the hour
     stayAwake = stayAwakeLong;                                        // Keeps Boron awake after reboot - helps with recovery
@@ -290,6 +290,8 @@ void setup()                                        // Note: Disconnected Setup(
   if (state == INITIALIZATION_STATE) state = IDLE_STATE;              // IDLE unless otherwise from above code
 
   digitalWrite(blueLED,LOW);                                          // Signal the end of startup
+
+  sysStatus.verboseMode = true;
 }
 
 
@@ -300,9 +302,8 @@ void loop()
     if (state != oldState) publishStateTransition();
     if (sysStatus.lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake && !current.solenoidState) state = NAPPING_STATE;         // When in low power mode, we can nap between taps
     if (Time.hour() != Time.hour(lastReportedTime)) state = MEASURING_STATE;                                                            // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= sysStatus.closeTime) || (Time.hour() < sysStatus.openTime)) state = SLEEPING_STATE;                             // The park is closed - sleep
+    if ((Time.hour() >= sysStatus.closeTime) || (Time.hour() < sysStatus.openTime)) state = SLEEPING_STATE;                             // The park is closed - sleep                                                                                   // Most important - turn off water when done!
     if (particleConnectionNeeded) state = CONNECTING_STATE;
-    if (wateringTimerFlag) state = WATERING_STATE;                                                                                      // Most important - turn off water when done!
     break;
 
   case SLEEPING_STATE: {                                              // This state is triggered once the park closes and runs until it opens
@@ -348,13 +349,13 @@ void loop()
   case CONNECTING_STATE:{
     static unsigned long connectionStartTime;
     char connectionStr[32];
-    static bool returnToReporting;
+    static bool returnToMeasuring;
 
     if (state != oldState) {
-      if (oldState == REPORTING_STATE) returnToReporting = true;
-      else returnToReporting = false;                                 // Need to set value each time - just to be clear
+      if (oldState == MEASURING_STATE) returnToMeasuring = true;
+      else returnToMeasuring = false;                                 // Need to set value each time - just to be clear
       publishStateTransition();
-      connectionStartTime = Time.now();                 // Start the clock first time we enter the state
+      connectionStartTime = Time.now();                               // Start the clock first time we enter the state
       Cellular.on();                                                  // Needed until they fix this: https://github.com/particle-iot/device-os/issues/1631
       Particle.connect();                                             // Told the Particle to connect, now we need to wait
     }
@@ -363,6 +364,7 @@ void loop()
       particleConnectionNeeded = false;                               // Connected so we don't need this flag
       sysStatus.connectedStatus = true;
       sysStatus.lastConnection = Time.now();                          // This is the last time we attempted to connect
+      Log.info("cloud connection successful");
     }
     else if ((Time.now() - connectionStartTime) > connectMaxTimeSec) {
       particleConnectionNeeded = false;                               // Timed out so we will give up until the next hour
@@ -383,59 +385,48 @@ void loop()
       if (sysStatus.verboseMode) publishQueue.publish("Cellular",connectionStr,PRIVATE);
       systemStatusWriteNeeded = true;
       currentCountsWriteNeeded = true;
-      if (sysStatus.connectedStatus && returnToReporting) state = REPORTING_STATE;    // If we came here from reporting, this will send us back
+      if (returnToMeasuring) state = MEASURING_STATE;    // If we came here from measuring, this will send us back
       else state = IDLE_STATE;                                             // We are connected so, we can go to the IDLE state
     }
   }
 
   case MEASURING_STATE:
-    if (sysStatus.verboseMode && state != oldState) publishStateTransition();
 
+    if (!sysStatus.connectedStatus) {
+      particleConnectionNeeded = true;                                // Go to connect state to connect and will return from there
+      state = CONNECTING_STATE;                                       // Go straight to the connecting state
+      break;
+    }
+
+    if (sysStatus.verboseMode && state != oldState) publishStateTransition();
     takeMeasurements();
-    
     state = WATERING_STATE;
     break;
 
-  case WATERING_STATE:                                                    // This state will examing soil values and decide on watering
-    if (wateringTimerFlag) {                                              // Already watering - time to turn off the tap
-      publishQueue.publish("Watering","Done with watering cycle",PRIVATE);
-      
-      // Insert code to turn off Rachio Webhook here
+  case WATERING_STATE: {                                                    // This state will examing soil values and decide on watering
+    if (state != oldState) publishStateTransition();
+    char data[32];
+    int wateringDurationSeconds = 120;
 
-      wateringTimerFlag = false;
-    }
-    else if (Time.hour() != 8 && Time.hour() != 12 && Time.hour() != 17) {
-
-      publishQueue.publish("Watering","Not time to water",PRIVATE);
-      // Insert code to turn off water here
-    }
-    else if (sysStatus.stateOfCharge < 50) {
-      publishQueue.publish("Watering","Watering Needed but battery too low",PRIVATE);
-      if(current.solenoidState) {}// Insert code to turn off water here
-    }
-    else if (current.soilMoisture < sysStatus.wateringThresholdPct && !current.solenoidState) {  // Water if dry and if we are not already watering
-
-      publishQueue.publish("Watering","Watering needed - starting watering cycle",PRIVATE);
-      // Insert code to turn on water here
-      // Insert Timer code here for watering event                                             
+    if (Time.hour() >5 && Time.hour() < 16 && current.soilMoisture <45) {
+      Log.info("Watering");
+      snprintf(data, sizeof(data), "{\"duration\":%i}",wateringDurationSeconds);
+      Particle.publish("Rachio-WaterGarden", data, PRIVATE);
     }
     else {
-
-      publishQueue.publish("Watering","Watering not needed",PRIVATE);
-      // Insert code to turn off watering here
+      Log.info("No watering needed at this time");
+      Particle.publish("No watering needed at this time");
     }
+
     state = REPORTING_STATE;
-    break;
+  }
+  break;
 
 
   case REPORTING_STATE:
     if (state != oldState) publishStateTransition();
 
-    if (!sysStatus.connectedStatus) {
-      particleConnectionNeeded = true;                                   // Go to connect state to connect and will return from there
-      state = CONNECTING_STATE;                                          // Go straight to the connecting state
-      break;
-    }
+    lastReportedTime = Time.now();                                  // We are only going to try once
 
     if (sysStatus.connectedStatus) {
       if (Time.hour() == sysStatus.openTime) dailyCleanup();          // Once a day, clean house and publish to Google Sheets
@@ -464,7 +455,6 @@ void loop()
     }
     else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset
       resetTimeStamp = millis();
-      // publishQueue.publish("spark/device/session/end", "", PRIVATE, WITH_ACK);  // If the device times out on the Webhook response, it will ensure a new session is started on next connect
       state = ERROR_STATE;                                            // Response timed out
     }
     break;
@@ -472,30 +462,35 @@ void loop()
   case ERROR_STATE:                                                   // To be enhanced - where we deal with errors
     if (state != oldState) publishStateTransition();
     if (millis() > resetTimeStamp + resetWait) {
-      if ((Time.now() - sysStatus.lastConnection) > 7200) {         // It is been over two hours since we last connected to the cloud - time for a reset
+
+      // The first two conditions imply that there is a connectivity issue - reset the modem
+      if ((Time.now() - sysStatus.lastConnection) > 7200L) {           // It is been over two hours since we last connected to the cloud - time for a reset
+        sysStatus.lastConnection = Time.now() - 3600;                 // Wait an hour before we come back to this condition
         fram.put(FRAM::systemStatusAddr,sysStatus);
-        Log.info("failed to connect to cloud, doing deep reset");
+        Log.error("failed to connect to cloud, doing deep reset");
         delay(100);
-        ab1805.deepPowerDown();                                       // 30 second power cycle of Boron including cellular modem, carrier board and all peripherals
+        fullModemReset();                                             // Full Modem reset and reboot
       }
-      if (sysStatus.resetCount <= 3) {                                // First try simple reset
-        if (sysStatus.connectedStatus) publishQueue.publish("State","Error State - Reset", PRIVATE, WITH_ACK);    // Brodcast Reset Action
+      else if (Time.now() - sysStatus.lastHookResponse > 7200L) {     //It has been more than two hours since a sucessful hook response
+        if (sysStatus.connectedStatus) publishQueue.publish("State","Error State - Full Modem Reset", PRIVATE, WITH_ACK);  // Broadcast Reset Action
+        delay(2000);                                                  // Time to publish
+        sysStatus.resetCount = 0;                                     // Zero the ResetCount
+        sysStatus.lastHookResponse = Time.now() - 3600;               // Give it an hour before we act on this condition again
+        systemStatusWriteNeeded=true;
+        fullModemReset();                                             // Full Modem reset and reboot
+      }
+      // The next two are more general so a simple reset is all you need
+      else if (sysStatus.resetCount <= 3) {                                // First try simple reset
+        if (sysStatus.connectedStatus) publishQueue.publish("State","Error State - System Reset", PRIVATE, WITH_ACK);    // Brodcast Reset Action
         delay(2000);
         System.reset();
-      }
-      else if (Time.now() - sysStatus.lastHookResponse > 7200L) { //It has been more than two hours since a sucessful hook response
-        if (sysStatus.connectedStatus) publishQueue.publish("State","Error State - Power Cycle", PRIVATE, WITH_ACK);  // Broadcast Reset Action
-        delay(2000);
-        sysStatus.resetCount = 0;                                     // Zero the ResetCount
-        systemStatusWriteNeeded=true;
-        ab1805.deepPowerDown(10);
       }
       else {                                                          // If we have had 3 resets - time to do something more
         if (sysStatus.connectedStatus) publishQueue.publish("State","Error State - Full Modem Reset", PRIVATE, WITH_ACK);            // Brodcase Reset Action
         delay(2000);
         sysStatus.resetCount = 0;                                     // Zero the ResetCount
-        systemStatusWriteNeeded=true;
-        fullModemReset();                                             // Full Modem reset and reboots
+        fram.put(FRAM::systemStatusAddr,sysStatus);                   // Won't get back to the main loop
+        ab1805.deepPowerDown();                                       // 30 second power cycle of Boron including cellular modem, carrier board and all peripherals
       }
     }
     break;
@@ -665,6 +660,7 @@ int setPowerConfig() {
 void loadSystemDefaults() {                                         // Default settings for the device - connected, not-low power and always on
   particleConnectionNeeded = true;                                  // Get connected to Particle - sets sysStatus.connectedStatus to true
   if (sysStatus.connectedStatus) publishQueue.publish("Mode","Loading System Defaults", PRIVATE, WITH_ACK);
+  Log.info("Loading system defaults");
   sysStatus.structuresVersion = 1;
   sysStatus.verboseMode = false;
   sysStatus.clockSet = false;

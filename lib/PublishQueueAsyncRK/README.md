@@ -26,9 +26,18 @@ Version 0.1.0 supports multiple back-end storage methods, including:
 
 Browsable API documentation for this library can be found [here](https://rickkas7.github.io/PublishQueueAsyncRK/).
 
+If you are using a Gen 3 devices (Argon, Boron, B Series SoM, or Tracker SoM), you may prefer to use [PublishQueuePosixRK](https://github.com/rickkas7/PublishQueuePosixRK) instead. It uses the flash file system on these devices to store events, and it's a much simpler architecture.
+
 ## Using it
 
 You'll need to add the PublishQueueAsyncRK library. It's in the community libraries and here on Github.
+
+You must use system threading mode with PublishQueueAsyncRK. The library will no longer initialize 
+if you do not have threading enabled.
+
+```
+SYSTEM_THREAD(ENABLED);
+```
 
 In your main source file, you'll need to allocate a retained buffer and initialize the object:
 
@@ -267,6 +276,33 @@ particle call electron3 test "3,5,64"
 Disconnect from the cloud, publish 5 events of 64 bytes each, then go back online.
 
 ## Version History
+
+### 0.2.4 (2021-06-18)
+
+- Removed test files from Particle library upload
+
+### 0.2.3 (2021-05-18)
+
+- Added trace messages for debugging FRAM implementation
+- Optimized the way entries are read out of FRAM to not read way past the end of the actual data
+- Added automated test for FRAM
+
+### 0.2.2 (2021-05-10)
+
+- Added trace messages to event addition and removal with retained memory
+- Fixed several problems with clearEvents
+- Added automated test suite
+
+### 0.2.1 (2021-05-04)
+
+- Added check to require SYSTEM_THREAD(ENABLED)
+- Information about PublishQueuePosixRK
+
+### 0.2.0 (2020-11-06)
+
+- Fixed a bug in all file-based implementations (Spiffs, SdFat) where events were not published after a reboot.
+- Added a new test suite function (7) to disconnect, post events to the queue, then reboot.
+- Added support for storing events on the POSIX file system on Gen 3 devices (Argon, Boron, Tracker SoM) in 2.0.0-rc.3 and later.
 
 ### 0.1.3 (2019-11-21)
 

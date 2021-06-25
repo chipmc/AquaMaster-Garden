@@ -13,11 +13,18 @@ PublishQueueAsyncBase::~PublishQueueAsyncBase() {
 }
 
 void PublishQueueAsyncBase::setup() {
+
+	if (system_thread_get_state(nullptr) != spark::feature::ENABLED) {
+		pubqLogger.error("SYSTEM_THREAD(ENABLED) is required");
+		return;
+	}
+
 	haveSetup = true;
 
 	os_mutex_create(&mutex);
 
 	thread = new Thread("PublishQueueAsync", threadFunctionStatic, this, OS_THREAD_PRIORITY_DEFAULT, 2048);
+
 }
 
 void PublishQueueAsyncBase::mutexLock() const {
@@ -27,6 +34,17 @@ void PublishQueueAsyncBase::mutexLock() const {
 void PublishQueueAsyncBase::mutexUnlock() const {
 	os_mutex_unlock(mutex);
 }
+
+void PublishQueueAsyncBase::logPublishQueueEventData(const void *data) const {
+	const PublishQueueEventData *eventDataStruct = (const PublishQueueEventData *)data;
+	const char *eventName = &((const char *)data)[sizeof(PublishQueueEventData)];
+	const char *eventData = eventName + strlen(eventName) + 1;
+
+	
+	pubqLogger.trace("ttl=%d flags=0x%2x size=%d eventName=%s", eventDataStruct->ttl, (int)eventDataStruct->flags, (int)eventDataStruct->size, eventName);
+	pubqLogger.trace("eventData=%s", eventData);
+}
+
 
 void PublishQueueAsyncBase::threadFunction() {
 	// Call the stateHandler forever
@@ -67,6 +85,10 @@ void PublishQueueAsyncBase::checkQueueState() {
 			// when waiting in a worker thread like this.
 			while(!request.isDone()) {
 				delay(1);
+				if (!isSending) {
+					pubqLogger.info("publish canceled");
+					return;
+				}
 			}
 			bool bResult = request.isSucceeded();
 			if (bResult) {
@@ -76,7 +98,9 @@ void PublishQueueAsyncBase::checkQueueState() {
 			}
 			else {
 				// Did not successfully transmit, try again after retry time
-				pubqLogger.info("published failed, will retry in %lu ms", failureRetryMs);
+				// This string is searched for in the automated test suite, if edited the
+				// test suite must also be edited
+				pubqLogger.info("publish failed, will retry in %lu ms", failureRetryMs);
 				stateHandler = &PublishQueueAsyncBase::waitRetryState;
 			}
 			isSending = false;
@@ -108,13 +132,22 @@ void PublishQueueAsyncBase::threadFunctionStatic(void *param) {
 PublishQueueAsyncRetained::PublishQueueAsyncRetained(uint8_t *retainedBuffer, uint16_t retainedBufferSize) :
 		retainedBuffer(retainedBuffer), retainedBufferSize(retainedBufferSize) {
 
-	// Initialize the retained buffer
+}
+
+PublishQueueAsyncRetained::~PublishQueueAsyncRetained() {
+
+}
+
+void PublishQueueAsyncRetained::setup() {
+// Initialize the retained buffer
 	bool initBuffer = false;
 
 	volatile PublishQueueHeader *hdr = reinterpret_cast<PublishQueueHeader *>(retainedBuffer);
 	if (hdr->magic == PUBLISH_QUEUE_HEADER_MAGIC && hdr->size == retainedBufferSize) {
 		// Calculate the next write offset
 		uint8_t *end = &retainedBuffer[retainedBufferSize];
+
+		pubqLogger.trace("retained numEvents=%d", (int)hdr->numEvents);
 
 		nextFree = &retainedBuffer[sizeof(PublishQueueHeader)];
 		for(uint16_t ii = 0; ii < hdr->numEvents; ii++) {
@@ -139,12 +172,11 @@ PublishQueueAsyncRetained::PublishQueueAsyncRetained(uint8_t *retainedBuffer, ui
 		hdr->numEvents = 0;
 		nextFree = &retainedBuffer[sizeof(PublishQueueHeader)];
 	}
+	pubqLogger.trace("at init numEvents=%d nextFree=%d", (int)hdr->numEvents, (int)(nextFree - retainedBuffer));
+
+	// Do superclass setup (starting the thread)
+	PublishQueueAsyncBase::setup();
 }
-
-PublishQueueAsyncRetained::~PublishQueueAsyncRetained() {
-
-}
-
 
 bool PublishQueueAsyncRetained::publishCommon(const char *eventName, const char *data, int ttl, PublishFlags flags1, PublishFlags flags2) {
 
@@ -156,7 +188,7 @@ bool PublishQueueAsyncRetained::publishCommon(const char *eventName, const char 
 		data = "";
 	}
 
-	// Size is the size of the header, the two c-strings (with null terminators), rounded up to a multiple of 4
+	// Size is the size of the header (8 bytes), the two c-strings (with null terminators), rounded up to a multiple of 4
 	size_t size = sizeof(PublishQueueEventData) + strlen(eventName) + strlen(data) + 2;
 	if ((size % 4) != 0) {
 		size += 4 - (size % 4);
@@ -177,9 +209,12 @@ bool PublishQueueAsyncRetained::publishCommon(const char *eventName, const char 
 			uint8_t *end = &retainedBuffer[retainedBufferSize];
 			if ((size_t)(end - nextFree) >= size) {
 				// There is room to fit this
+				pubqLogger.trace("saving event at nextFree=%d", (int)(nextFree - retainedBuffer));
+
 				PublishQueueEventData *eventData = reinterpret_cast<PublishQueueEventData *>(nextFree);
 				eventData->ttl = ttl;
 				eventData->flags = flags1.value() | flags2.value();
+				eventData->size = size;
 
 				char *cp = reinterpret_cast<char *>(nextFree);
 				cp += sizeof(PublishQueueEventData);
@@ -191,8 +226,11 @@ bool PublishQueueAsyncRetained::publishCommon(const char *eventName, const char 
 
 				nextFree += size;
 
+
 				PublishQueueHeader *hdr = reinterpret_cast<PublishQueueHeader *>(retainedBuffer);
 				hdr->numEvents++;
+
+				pubqLogger.trace("after saving numEvents=%d nextFree=%d end=%d", (int)hdr->numEvents, (int)(nextFree - retainedBuffer), retainedBufferSize);
 				return true;
 			}
 
@@ -234,18 +272,17 @@ PublishQueueEventData *PublishQueueAsyncRetained::getOldestEvent() {
 bool PublishQueueAsyncRetained::clearEvents() {
 
 	// This entire function holds a mutex lock that's released when returning
-
-	bool result = false;
-
 	StMutexLock lock(this);
 
 	PublishQueueHeader *hdr = reinterpret_cast<PublishQueueHeader *>(retainedBuffer);
-	if (!isSending) {
-		hdr->numEvents = 0;
-		result = true;
-	}
+	hdr->numEvents = 0;
+	nextFree = &retainedBuffer[sizeof(PublishQueueHeader)];
+	isSending = false;
+	lastPublish = 0;
 
-	return result;
+    pubqLogger.trace("clearEvents numEvents=%d size=%d", (int)hdr->numEvents, (int)hdr->size);
+
+	return true;
 }
 
 uint8_t *PublishQueueAsyncRetained::skipEvent(uint8_t *start) {
@@ -288,6 +325,8 @@ bool PublishQueueAsyncRetained::discardOldEvent(bool secondEvent) {
 	uint8_t *next = skipEvent(start);
 	size_t len = next - start;
 
+	pubqLogger.trace("discardOldestEvent secondEvent=%d start=%d next=%d nextFree=%d", (int)secondEvent, (int)(start - retainedBuffer), (int)(next - retainedBuffer), (int)(nextFree - retainedBuffer));
+
 	size_t after = end - next;
 	if (after > 0) {
 		// Move events down
@@ -296,6 +335,8 @@ bool PublishQueueAsyncRetained::discardOldEvent(bool secondEvent) {
 
 	nextFree -= len;
 	hdr->numEvents--;
+
+	pubqLogger.trace("after discardOldestEvent numEvents=%d nextFree=%d", hdr->numEvents, (int)(nextFree - retainedBuffer));
 
 
 	return true;
