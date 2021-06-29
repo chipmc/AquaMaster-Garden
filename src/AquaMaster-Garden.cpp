@@ -22,6 +22,9 @@
 //v2.00 - Moved to a non-blocking connecting state
 //v2.01 - Removed line that was restarting the session over and again.  
 //v2.02 - Significant change - added Rachio Webhook
+//v3.03 - Added stay awake
+//v3.04 - Added the ability to set the duration - fixed logic and reporting
+//v4.00 - Fixed a connectivity issue
 
 
 // Particle Product definitions
@@ -52,14 +55,15 @@ int setOpenTime(String command);
 int setCloseTime(String command);
 int setLowPowerMode(String command);
 int setWaterThreshold(String command);
+int setWaterDuration(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 22 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 25 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
-PRODUCT_VERSION(2);
+PRODUCT_VERSION(4);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="2.01";
+char currentPointRelease[6] ="4.00";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -113,7 +117,7 @@ FuelGauge fuel;                                     // Enable the fuel gauge API
 
 // State Maching Variables
 enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, MEASURING_STATE, WATERING_STATE, CONNECTING_STATE, REPORTING_STATE, RESP_WAIT_STATE, NAPPING_STATE, SLEEPING_STATE, LOW_BATTERY_STATE};
-char stateNames[11][17] = {"Initialize", "Error", "Idle", "Measuring", "Watering", "Reporting", "Connecting State", "Response Wait", "Napping", "Sleeping State" ,"Low Battery"};
+char stateNames[11][17] = {"Initialize", "Error", "Idle", "Measuring", "Watering", "Connecting State", "Reporting", "Response Wait", "Napping", "Sleeping State" ,"Low Battery"};
 State state = INITIALIZATION_STATE;
 State oldState = INITIALIZATION_STATE;
 
@@ -156,12 +160,11 @@ char batteryContextStr[16];                         // Tracks the battery contex
 char lowPowerModeStr[16];                           // In low power mode?
 char openTimeStr[8]="NA";                           // Park Open Time
 char closeTimeStr[8]="NA";                          // Park close Time
+char wateringDurationStr[16];                       // How long do we water
 bool systemStatusWriteNeeded = false;               // Keep track of when we need to write
 bool currentCountsWriteNeeded = false;
 bool particleConnectionNeeded = false;              // Do we need to connect to Particle
 bool volatile wateringTimerFlag = false;
-
-
 
 // These variables are associated with the watchdog timer and will need to be better integrated
 int outOfMemory = -1;
@@ -204,6 +207,7 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.variable("TimeOffset",currentOffsetStr);
   Particle.variable("BatteryContext",batteryContextMessage);
   Particle.variable("WateringPct",wateringThresholdPctStr);
+  Particle.variable("WateringDuration",wateringDurationStr);
 
   Particle.function("resetCounts",resetCounts);
   Particle.function("HardReset",hardResetNow);
@@ -216,6 +220,7 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.function("Set-OpenTime",setOpenTime);
   Particle.function("Set-Close",setCloseTime);
   Particle.function("SetWaterThreshold",setWaterThreshold);
+  Particle.function("SetWaterDuration",setWaterDuration);
 
   Particle.setDisconnectOptions(CloudDisconnectOptions().graceful(true).timeout(5s));  // Don't disconnect abruptly
 
@@ -259,6 +264,7 @@ void setup()                                        // Note: Disconnected Setup(
   snprintf(currentOffsetStr,sizeof(currentOffsetStr),"%2.1f UTC",(Time.local() - Time.now()) / 3600.0);   // Load the offset string
 
   snprintf(wateringThresholdPctStr,sizeof(wateringThresholdPctStr),"%2.1f %%",sysStatus.wateringThresholdPct);
+  snprintf(wateringDurationStr, sizeof(wateringDurationStr), "%i seconds",sysStatus.wateringDuration);
   
 
   (sysStatus.lowPowerMode) ? strncpy(lowPowerModeStr,"Low Power",sizeof(lowPowerModeStr)) : strncpy(lowPowerModeStr,"Not Low Power",sizeof(lowPowerModeStr));
@@ -285,6 +291,7 @@ void setup()                                        // Note: Disconnected Setup(
     }
     takeMeasurements();                                               // Populates values so you can read them before the hour
     stayAwake = stayAwakeLong;                                        // Keeps Boron awake after reboot - helps with recovery
+    stayAwakeTimeStamp = millis();
   }
 
   if (state == INITIALIZATION_STATE) state = IDLE_STATE;              // IDLE unless otherwise from above code
@@ -292,6 +299,7 @@ void setup()                                        // Note: Disconnected Setup(
   digitalWrite(blueLED,LOW);                                          // Signal the end of startup
 
   sysStatus.verboseMode = true;
+  sysStatus.lowPowerMode = false;
 }
 
 
@@ -325,6 +333,7 @@ void loop()
     }
     if (Time.hour() < sysStatus.closeTime && Time.hour() >= sysStatus.openTime) { // We might wake up and find it is opening time.  Park is open let's get ready for the day
       stayAwake = stayAwakeLong;                                       // Keeps Boron awake after deep sleep - may not be needed
+      stayAwakeTimeStamp = millis();
     }
     state = IDLE_STATE;                                                // Head back to the idle state to see what to do next
     } break;
@@ -332,7 +341,6 @@ void loop()
   case NAPPING_STATE: {  // This state puts the device in low power mode quickly
     if (state != oldState) publishStateTransition();
     if (sysStatus.connectedStatus) disconnectFromParticle();          // If we are in connected mode we need to Disconnect from Particle
-    stayAwake = 1000;                                                 // Once we come into this function, we need to reset stayAwake as it changes at the top of the hour
     ab1805.stopWDT();                                                 // If we are sleeping, we will miss petting the watchdog
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
     config.mode(SystemSleepMode::ULTRA_LOW_POWER)
@@ -371,6 +379,7 @@ void loop()
       if ((Time.now() - sysStatus.lastConnection) > 7200) {             // Only sends to ERROR_STATE if it has been over 2 hours
         state = ERROR_STATE;     
         resetTimeStamp = millis();
+        break;
       }
       sysStatus.connectedStatus = false;
       Log.info("cloud connection unsuccessful");
@@ -388,7 +397,7 @@ void loop()
       if (returnToMeasuring) state = MEASURING_STATE;    // If we came here from measuring, this will send us back
       else state = IDLE_STATE;                                             // We are connected so, we can go to the IDLE state
     }
-  }
+  } break;
 
   case MEASURING_STATE:
 
@@ -400,22 +409,22 @@ void loop()
 
     if (sysStatus.verboseMode && state != oldState) publishStateTransition();
     takeMeasurements();
+
     state = WATERING_STATE;
     break;
 
   case WATERING_STATE: {                                                    // This state will examing soil values and decide on watering
     if (state != oldState) publishStateTransition();
     char data[32];
-    int wateringDurationSeconds = 120;
 
-    if (Time.hour() >5 && Time.hour() < 16 && current.soilMoisture <45) {
+    if (Time.hour() > sysStatus.openTime && Time.hour() < sysStatus.closeTime && current.soilMoisture < sysStatus.wateringThresholdPct) {
       Log.info("Watering");
-      snprintf(data, sizeof(data), "{\"duration\":%i}",wateringDurationSeconds);
+      snprintf(data, sizeof(data), "{\"duration\":%i}",sysStatus.wateringDuration);
       Particle.publish("Rachio-WaterGarden", data, PRIVATE);
     }
     else {
       Log.info("No watering needed at this time");
-      Particle.publish("No watering needed at this time");
+      Particle.publish("Watering","No watering needed at this time",PRIVATE);
     }
 
     state = REPORTING_STATE;
@@ -966,6 +975,31 @@ int setWaterThreshold(String command)                                       // T
 }
 
 /**
+ * @brief Let's you set the duration of the watering
+ * 
+ * @details Input the watering duration in seconds from 0 1000 seconds
+ *
+ * @param Pass the wating duration in seconds.
+ * 
+ * @return 1 if able to successfully take action, 0 if invalid command
+ */
+int setWaterDuration(String command)                                       // This is the amount of time in seconds we will wait before starting a new session
+{
+  char * pEND;
+  float tempValue = strtol(command,&pEND,10);                        // Looks for the first float and interprets it
+  if ((tempValue < 0) | (tempValue > 1000)) return 0;        // Make sure it falls in a valid range or send a "fail" result
+  sysStatus.wateringDuration = tempValue;                          // debounce is how long we must space events to prevent overcounting
+  systemStatusWriteNeeded = true;
+  snprintf(wateringDurationStr,sizeof(wateringDurationStr),"%i seconds",sysStatus.wateringDuration);
+  if (sysStatus.verboseMode && sysStatus.connectedStatus) {                                                  // Publish result if feeling verbose
+    publishQueue.publish("Duration",wateringDurationStr, PRIVATE);
+  }
+  return 1;                                                           // Returns 1 to let the user know if was reset
+}
+
+
+
+/**
  * @brief Publishes a state transition over serial and to the Particle monitoring system.
  * 
  * @details A good debugging tool.
@@ -977,7 +1011,7 @@ void publishStateTransition(void)
   oldState = state;
   if (sysStatus.verboseMode) {
     if (sysStatus.connectedStatus) publishQueue.publish("State Transition",stateTransitionString, PRIVATE, WITH_ACK);
-    Serial.println(stateTransitionString);
+    Log.info(stateTransitionString);
   }
 }
 
@@ -987,20 +1021,23 @@ void publishStateTransition(void)
  * @details Disconnects from the cloud, resets modem and SIM, and deep sleeps for 10 seconds.
  * Adapted form Rikkas7's https://github.com/rickkas7/electronsample.
  */
-void fullModemReset() {  // 
-	Particle.disconnect(); 	                                         // Disconnect from the cloud
-	unsigned long startTime = millis();  	                           // Wait up to 15 seconds to disconnect
-	while(sysStatus.connectedStatus && millis() - startTime < 15000) {
-		delay(100);
-	}
+void fullModemReset() {                                             // USed if we want to reset the modem's state
+	Particle.disconnect(); 	                                          // Disconnect from the cloud    
+	waitFor(Particle.connected, 15000);                               // Wait up to 15 seconds to disconnect
 	// Reset the modem and SIM card
-	// 16:MT silent reset (with detach from network and saving of NVM parameters), with reset of the SIM card
-	Cellular.off();
-	delay(1000);
-	// Go into deep sleep for 10 seconds to try to reset everything. This turns off the modem as well.
-	System.sleep(SLEEP_MODE_DEEP, 10);
-}
+  Cellular.off();                                                   // Turn off the Cellular modem
+  waitFor(Cellular.isOff, 30000);                                   // New feature with deviceOS@2.1.0
 
+  ab1805.stopWDT();                                                 // No watchdogs interrupting our slumber
+                                             
+  config.mode(SystemSleepMode::ULTRA_LOW_POWER)
+    .gpio(userSwitch,CHANGE)
+    .duration(10 * 1000);
+
+
+  System.sleep(config);                                             // Put the device to sleep device reboots from here   
+  ab1805.resumeWDT();                                                // Wakey Wakey - WDT can resume
+}
 /**
  * @brief Cleanup function that is run at the beginning of the day.
  * 

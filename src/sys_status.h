@@ -21,6 +21,7 @@ struct systemStatus_structure {
   unsigned long lastConnection;                     // Last time we successfully connected to Particle
   uint16_t lastConnectionDuration;                  // How long - in seconds - did it take to last connect to the Particle cloud
   float wateringThresholdPct;                       // When do we water
+  int wateringDuration;                             // How long to water in seconds
 };
 
 extern struct systemStatus_structure sysStatus;
