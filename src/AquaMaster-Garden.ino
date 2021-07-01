@@ -19,13 +19,15 @@
 //v3.03 - Added stay awake
 //v3.04 - Added the ability to set the duration - fixed logic and reporting
 //v4.00 - Fixed a connectivity issue
+//v5.00 - Added more reporting - stay awake longer at the top of the hour
+//v5.01 - Added ability to set watering duration
 
 
 // Particle Product definitions
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
-PRODUCT_VERSION(4);
+PRODUCT_VERSION(5);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="4.00";
+char currentPointRelease[6] ="5.01";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -78,8 +80,8 @@ AB1805 ab1805(Wire);                                // Rickkas' RTC / Watchdog l
 FuelGauge fuel;                                     // Enable the fuel gauge API                        
 
 // State Maching Variables
-enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, MEASURING_STATE, WATERING_STATE, CONNECTING_STATE, REPORTING_STATE, RESP_WAIT_STATE, NAPPING_STATE, SLEEPING_STATE, LOW_BATTERY_STATE};
-char stateNames[11][17] = {"Initialize", "Error", "Idle", "Measuring", "Watering", "Connecting State", "Reporting", "Response Wait", "Napping", "Sleeping State" ,"Low Battery"};
+enum State { INITIALIZATION_STATE, ERROR_STATE, IDLE_STATE, MEASURING_STATE, WATERING_STATE, CONNECTING_STATE, REPORTING_STATE, RESP_WAIT_STATE, NAPPING_STATE, LOW_BATTERY_STATE};
+char stateNames[11][17] = {"Initialize", "Error", "Idle", "Measuring", "Watering", "Connecting State", "Reporting", "Response Wait", "Napping","Low Battery"};
 State state = INITIALIZATION_STATE;
 State oldState = INITIALIZATION_STATE;
 
@@ -101,7 +103,7 @@ const int soilPin =       A0;                      // Pressure Sensor inerrupt p
 
 // Timing Variables
 const int wakeBoundary = 1*3600 + 0*60 + 0;         // 1 hour 0 minutes 0 seconds
-const unsigned long stayAwakeLong = 90000;          // In lowPowerMode, how long to stay awake every hour
+const unsigned long stayAwakeLong = 300000;         // In lowPowerMode, how long to stay awake every hour in millis
 const unsigned long webhookWait = 30000;            // How long will we wait for a WebHook response
 const unsigned long resetWait = 30000;              // How long will we wait in ERROR_STATE until reset
 unsigned long stayAwakeTimeStamp = 0;               // Timestamps for our timing variables..
@@ -135,6 +137,7 @@ time_t RTCTime;
 // This section is where we will initialize sensor specific variables, libraries and function prototypes
 // Pressure Sensor Variables
 Timer awakeTimer(1800000, awakeTimerISR, true);           // 30 minute timer, calles the awakeTimerISR and is one-shot
+Timer wateringTimer(600000, wateringTimerISR, true);      // 10 minute timer, calles the wateringTimerISR and is one-shot
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -272,33 +275,8 @@ void loop()
     if (state != oldState) publishStateTransition();
     if (sysStatus.lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake && !current.solenoidState) state = NAPPING_STATE;         // When in low power mode, we can nap between taps
     if (Time.hour() != Time.hour(lastReportedTime)) state = MEASURING_STATE;                                                            // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= sysStatus.closeTime) || (Time.hour() < sysStatus.openTime)) state = SLEEPING_STATE;                             // The park is closed - sleep                                                                                   // Most important - turn off water when done!
     if (particleConnectionNeeded) state = CONNECTING_STATE;
     break;
-
-  case SLEEPING_STATE: {                                              // This state is triggered once the park closes and runs until it opens
-    if (state != oldState) publishStateTransition();
-    if (sysStatus.connectedStatus) disconnectFromParticle();          // Disconnect cleanly from Particle
-    ab1805.stopWDT();                                                 // No watchdogs interrupting our slumber
-    int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
-    config.mode(SystemSleepMode::ULTRA_LOW_POWER)
-      .gpio(userSwitch,CHANGE)
-      .duration(wakeInSeconds * 1000);
-    SystemSleepResult result = System.sleep(config);                   // Put the device to sleep device reboots from here   
-    ab1805.resumeWDT();                                                // Wakey Wakey - WDT can resume
-    fuel.wakeup();                                                     // Make sure that the fuel gauge wakes quickly 
-    fuel.quickStart();
-    if (result.wakeupPin() == userSwitch) {                            // If the user woke the device we need to get up
-      setLowPowerMode("0");
-      sysStatus.openTime = 0;
-      sysStatus.closeTime = 24;
-    }
-    if (Time.hour() < sysStatus.closeTime && Time.hour() >= sysStatus.openTime) { // We might wake up and find it is opening time.  Park is open let's get ready for the day
-      stayAwake = stayAwakeLong;                                       // Keeps Boron awake after deep sleep - may not be needed
-      stayAwakeTimeStamp = millis();
-    }
-    state = IDLE_STATE;                                                // Head back to the idle state to see what to do next
-    } break;
 
   case NAPPING_STATE: {  // This state puts the device in low power mode quickly
     if (state != oldState) publishStateTransition();
@@ -381,6 +359,9 @@ void loop()
 
     if (Time.hour() > sysStatus.openTime && Time.hour() < sysStatus.closeTime && current.soilMoisture < sysStatus.wateringThresholdPct) {
       Log.info("Watering");
+      current.solenoidState = true;
+      currentCountsWriteNeeded = true;
+      wateringTimer.changePeriod(sysStatus.wateringDuration * 1000);
       snprintf(data, sizeof(data), "{\"duration\":%i}",sysStatus.wateringDuration);
       Particle.publish("Rachio-WaterGarden", data, PRIVATE);
     }
@@ -573,7 +554,7 @@ void getSignalStrength() {
 int getTemperature() {                                                // Get temperature and make sure we are not getting a spurrious value
 
   int reading = analogRead(tmp36Pin);                                 //getting the voltage reading from the temperature sensor
-  if (reading < 400) {                                                // This ocrresponds to 0 degrees - less than this and we should take another reading to be sure
+  if (reading < 400) {                                                // This corresponds to 0 degrees - less than this and we should take another reading to be sure
     delay(50);
     reading = analogRead(tmp36Pin);
   }
@@ -592,7 +573,9 @@ void outOfMemoryHandler(system_event_t event, int param) {
 }
 
 void wateringTimerISR() {
-  wateringTimerFlag = true;
+  current.solenoidState = false;
+  state = REPORTING_STATE;
+  currentCountsWriteNeeded = true;
 }
 
 void awakeTimerISR() {
