@@ -1,9 +1,8 @@
 #ifndef TIME_ZONE_FN_H
 #define TIME_ZONE_FN_H
 
-#include "PublishQueueAsyncRK.h"                    // Async Particle Publish
-
-extern PublishQueueAsync publishQueue;
+#include "particle_fn.h"
+#include "Particle.h"
 
 extern char currentOffsetStr[10];
 
@@ -16,3 +15,4 @@ bool isDSTusa();
 bool isDSTnz();
 
 #endif
+

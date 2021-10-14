@@ -1,6 +1,8 @@
 #ifndef SYS_STATUS_H
 #define SYS_STATUS_H
 
+#include "Particle.h"
+
 struct systemStatus_structure {  
   uint8_t structuresVersion;                        // Version of the data structures (system and data)
   uint8_t placeholder;                              // available for future use

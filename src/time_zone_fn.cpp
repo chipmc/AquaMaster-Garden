@@ -1,5 +1,6 @@
 #include "time_zone_fn.h"
 #include "sys_status.h"
+#include "particle_fn.h"
 
 /**
  * @brief Sets the time zone by offset from UTC.
@@ -24,10 +25,11 @@ int setTimeZone(String command)
   Time.zone(sysStatus.timezone);
   systemStatusWriteNeeded = true;                                             // Need to store to FRAM back in the main loop
   snprintf(currentOffsetStr,sizeof(currentOffsetStr),"%2.1f UTC",(Time.local() - Time.now()) / 3600.0);
-  if (Particle.connected()) {
+  if (sysStatus.connectedStatus) {
     snprintf(data, sizeof(data), "Time zone offset %i",tempTimeZoneOffset);
-    publishQueue.publish("Time",data, PRIVATE);
-    publishQueue.publish("Time",Time.timeStr(Time.now()), PRIVATE);
+    Particle.publish("Time",data, PRIVATE);
+    waitUntil(meterParticlePublish);
+    Particle.publish("Time",Time.timeStr(Time.now()), PRIVATE);
   }
 
   return 1;
@@ -57,8 +59,9 @@ int setDSTOffset(String command) {                                      // This 
   if (Time.isValid()) isDSTusa() ? Time.beginDST() : Time.endDST();     // Perform the DST calculation here
   snprintf(currentOffsetStr,sizeof(currentOffsetStr),"%2.1f UTC",(Time.local() - Time.now()) / 3600.0);
   if (Particle.connected()) {
-    publishQueue.publish("Time",data, PRIVATE);
-    publishQueue.publish("Time",Time.timeStr(t), PRIVATE);
+    Particle.publish("Time",data, PRIVATE);
+    waitUntil(meterParticlePublish);
+    Particle.publish("Time",Time.timeStr(t), PRIVATE);
   }
   return 1;
 }
