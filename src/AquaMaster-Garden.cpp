@@ -40,6 +40,7 @@
 //v5.00 - Added more reporting - stay awake longer at the top of the hour
 //v5.01 - Added ability to set watering duration
 //v6.00 - Moved to Visitation code base v31 as base.  Updated base code for battery management.  Also, set charging for smaller panel
+//v6.02 - Working through minor bugs in code transition - Fixed state machine flow
 
 
 // Particle Product definitions
@@ -62,7 +63,6 @@ void loadSystemDefaults();
 void checkSystemValues();
 void makeUpStringMessages();
 bool disconnectFromParticle();
-int resetCounts(String command);
 int hardResetNow(String command);
 int sendNow(String command);
 void resetEverything();
@@ -77,11 +77,11 @@ int setWaterDuration(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 40 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 41 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(6);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="6.00";
+char currentPointRelease[6] ="6.02";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -156,7 +156,6 @@ const int userSwitch =    D4;                       // User switch with a pull-u
 // Pin Constants - Sensor
 const int soilPin =       A0;                      // Pressure Sensor inerrupt pin
 
-
 // Timing Variables
 const int wakeBoundary = 1*3600 + 0*60 + 0;         // 1 hour 0 minutes 0 seconds
 const unsigned long stayAwakeLong = 300000;         // In lowPowerMode, how long to stay awake every hour in millis
@@ -169,7 +168,6 @@ unsigned long resetTimeStamp = 0;                   // Resets - this keeps you f
 unsigned long lastReportedTime = 0;                 // Need to keep this separate from time so we know when to report
 char wateringThresholdPctStr[8];
 unsigned long connectionStartTime;
-
 
 // Program Variables
 volatile bool watchdogFlag;                         // Flag to let us know we need to pet the dog
@@ -229,7 +227,6 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.variable("WateringPct",wateringThresholdPctStr);
   Particle.variable("WateringDuration",wateringDurationStr);
 
-  Particle.function("resetCounts",resetCounts);
   Particle.function("HardReset",hardResetNow);
   Particle.function("SendNow",sendNow);
   Particle.function("LowPowerMode",setLowPowerMode);
@@ -352,6 +349,30 @@ void loop()
     else state = IDLE_STATE;
     } break;
 
+    case MEASURING_STATE:
+
+    if (state != oldState) publishStateTransition();
+    takeMeasurements();
+
+    if (Time.hour() > sysStatus.openTime && Time.hour() < sysStatus.closeTime && current.soilMoisture < sysStatus.wateringThresholdPct) {
+      current.solenoidState = true;                                     // This sets a flag that indicates watering is needed
+      currentCountsWriteNeeded = true;
+    }
+  
+    state = REPORTING_STATE;
+    break;
+
+  case REPORTING_STATE:
+    if (state != oldState) publishStateTransition();
+
+    lastReportedTime = Time.now();                                    // We are only going to report once each hour from the IDLE state.  We may or may not connect to Particle
+    takeMeasurements();                                               // Take Measurements here for reporting
+    if (Time.hour() == sysStatus.openTime) dailyCleanup();            // Once a day, clean house and publish to Google Sheets
+    sendEvent();                                                      // Publish hourly but not at opening time as there is nothing to publish
+    state = CONNECTING_STATE;                                         // We are only passing through this state once each hour    
+
+    break;
+
   case CONNECTING_STATE:{                                              // Will connect - or not and head back to the Idle state
     static State retainedOldState;                                     // Keep track for where to go next (depends on whether we were called from Reporting)
     static unsigned long connectionStartTimeStamp;                     // Time in Millis that helps us know how long it took to connect
@@ -422,48 +443,7 @@ void loop()
       }
       else state = IDLE_STATE;
     } 
-  } break;
-
-  case MEASURING_STATE:
-
-    if (sysStatus.verboseMode && state != oldState) publishStateTransition();
-    takeMeasurements();
-
-    state = WATERING_STATE;
-    break;
-
-  case WATERING_STATE: {                                                    // This state will examing soil values and decide on watering
-    if (state != oldState) publishStateTransition();
-    char data[32];
-
-    if (Time.hour() > sysStatus.openTime && Time.hour() < sysStatus.closeTime && current.soilMoisture < sysStatus.wateringThresholdPct) {
-      Log.info("Watering");
-      current.solenoidState = true;
-      currentCountsWriteNeeded = true;
-      wateringTimer.changePeriod(sysStatus.wateringDuration * 1000);
-      snprintf(data, sizeof(data), "{\"duration\":%i}",sysStatus.wateringDuration);
-      Particle.publish("Rachio-WaterGarden", data, PRIVATE);
-    }
-    else {
-      Log.info("No watering needed at this time");
-      Particle.publish("Watering","No watering needed at this time",PRIVATE);
-    }
-
-    state = REPORTING_STATE;
-  }
-  break;
-
-
-  case REPORTING_STATE:
-    if (state != oldState) publishStateTransition();
-
-    lastReportedTime = Time.now();                                    // We are only going to report once each hour from the IDLE state.  We may or may not connect to Particle
-    takeMeasurements();                                               // Take Measurements here for reporting
-    if (Time.hour() == sysStatus.openTime) dailyCleanup();            // Once a day, clean house and publish to Google Sheets
-    sendEvent();                                                      // Publish hourly but not at opening time as there is nothing to publish
-    state = CONNECTING_STATE;                                         // We are only passing through this state once each hour    
-
-    break;
+  } break;  
 
   case RESP_WAIT_STATE: {
     static unsigned long webhookTimeStamp = 0;                        // Webhook time stamp
@@ -474,10 +454,10 @@ void loop()
       publishStateTransition();
     }
 
-    if (!dataInFlight)  {                                             // Response received --> back to IDLE state
-      state = IDLE_STATE;
+    if (!dataInFlight)  {                                             // Response received --> on to the watering state
+      state = WATERING_STATE;                                         // Remember we only get to this state if connected 
     }
-    else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset
+    else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset - this will pre-empt watering
       resetTimeStamp = millis();
       current.alerts = 3;                                             // Raise the missed webhook flag
       state = ERROR_STATE;                                            // Response timed out
@@ -486,6 +466,25 @@ void loop()
     systemStatusWriteNeeded = true;
 
   } break;
+
+  case WATERING_STATE: {                                                    // This state will examing soil values and decide on watering
+    if (state != oldState) publishStateTransition();
+    char data[32];
+
+    if (current.solenoidState) {
+      Log.info("Watering");
+      wateringTimer.changePeriod(sysStatus.wateringDuration * 1000);
+      snprintf(data, sizeof(data), "{\"duration\":%i}",sysStatus.wateringDuration);
+      Particle.publish("Rachio-WaterGarden", data, PRIVATE);
+    }
+    else {
+      Log.info("No watering needed at this time");
+      Particle.publish("Watering","No watering needed at this time",PRIVATE);
+    }
+
+    state = IDLE_STATE;
+  }
+  break;
 
   case ERROR_STATE:                                                    // To be enhanced - where we deal with errors
     if (state != oldState) publishStateTransition();
@@ -605,7 +604,7 @@ void sendEvent() {
   char data[256];                                                     // Store the date in this character array - not global
   unsigned long timeStampValue = Time.now();                                       // Going to start sending timestamps - and will modify for midnight to fix reporting issue
   snprintf(data, sizeof(data), "{\"soilMoisture\":%i, \"watering\":%i, \"battery\":%i,\"key1\":\"%s\",\"temp\":%i, \"resets\":%i, \"alerts\":%i, \"connecttime\":%i,\"timestamp\":%lu000}",current.soilMoisture, current.solenoidState, sysStatus.stateOfCharge, batteryContext[sysStatus.batteryState], current.temperature, sysStatus.resetCount, current.alerts, sysStatus.lastConnectionDuration, timeStampValue);
-  PublishQueuePosix::instance().publish("Ubidots-Counter-Hook-v1", data, PRIVATE);
+  PublishQueuePosix::instance().publish("Ubidots-AquaMaster-Garden-v1", data, PRIVATE);
   current.alerts = 0;                                                 // Reset alerts after send
 }
 
@@ -761,7 +760,7 @@ void outOfMemoryHandler(system_event_t event, int param) {
 
 void wateringTimerISR() {
   current.solenoidState = false;
-  state = REPORTING_STATE;
+  state = MEASURING_STATE;
   currentCountsWriteNeeded = true;
 }
 
@@ -776,12 +775,13 @@ void userSwitchISR() {
 
 // Power Management function
 int setPowerConfig() {
+  const int maxCurrentFromPanel = 550;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
   SystemPowerConfiguration conf;
   System.setPowerConfiguration(SystemPowerConfiguration());  // To restore the default configuration
   if (sysStatus.solarPowerMode) {
-    conf.powerSourceMaxCurrent(900) // Set maximum current the power source can provide (applies only when powered through VIN)
+    conf.powerSourceMaxCurrent(maxCurrentFromPanel) // Set maximum current the power source can provide  3.5W Panel (applies only when powered through VIN)
         .powerSourceMinVoltage(5080) // Set minimum voltage the power source can provide (applies only when powered through VIN)
-        .batteryChargeCurrent(1024) // Set battery charge current
+        .batteryChargeCurrent(maxCurrentFromPanel) // Set battery charge current
         .batteryChargeVoltage(4208) // Set battery termination voltage
         .feature(SystemPowerFeature::USE_VIN_SETTINGS_WITH_USB_HOST); // For the cases where the device is powered through VIN
                                                                      // but the USB cable is connected to a USB host, this feature flag
@@ -838,7 +838,8 @@ void checkSystemValues() {                                          // Checks to
   if (sysStatus.closeTime < 12 || sysStatus.closeTime > 24) sysStatus.closeTime = 24;
   if (sysStatus.lastConnectionDuration < 0 || sysStatus.lastConnectionDuration > connectMaxTimeSec) sysStatus.lastConnectionDuration = 0;
   sysStatus.solarPowerMode = true;                                  // Need to reset this value across the fleet
-
+  if (sysStatus.wateringThresholdPct < 0 || sysStatus.wateringThresholdPct > 100) sysStatus.wateringThresholdPct = 10.0;
+  if (sysStatus.wateringDuration < 0 || sysStatus.wateringDuration > 1000) sysStatus.wateringDuration = 300;
   if (current.maxConnectTime > connectMaxTimeSec) {
     current.maxConnectTime = 0;
     currentCountsWriteNeeded = true;
@@ -877,6 +878,10 @@ void makeUpStringMessages() {
   if (sysStatus.lowPowerMode) strncpy(lowPowerModeStr,"Low Power", sizeof(lowPowerModeStr));
   else strncpy(lowPowerModeStr,"Not Low Power", sizeof(lowPowerModeStr));
 
+  // Watering Strings
+  snprintf(wateringDurationStr,sizeof(wateringDurationStr),"%i seconds",sysStatus.wateringDuration);
+  snprintf(wateringThresholdPctStr,sizeof(wateringThresholdPctStr),"%2.1f %%",sysStatus.wateringThresholdPct);
+
   return;
 }
 
@@ -894,20 +899,6 @@ bool disconnectFromParticle()                                          // Ensure
   systemStatusWriteNeeded = true;
   detachInterrupt(userSwitch);                                         // Stop watching the userSwitch as we will no longer be connected
   return true;
-}
-
-int resetCounts(String command)                                   // Resets the current hourly and daily counts
-{
-  if (command == "1")
-  {
-    sysStatus.resetCount = 0;                                            // If so, store incremented number - watchdog must have done This
-    current.alerts = 0;                                           // Reset count variables
-    dataInFlight = false;
-    currentCountsWriteNeeded = true;                                  // Make sure we write to FRAM back in the main loop
-    systemStatusWriteNeeded = true;
-    return 1;
-  }
-  else return 0;
 }
 
 int hardResetNow(String command)                                      // Will perform a hard reset on the Electron
@@ -1124,7 +1115,7 @@ int setWaterThreshold(String command)                                       // T
   if ((tempThreshold < 0.0) | (tempThreshold > 100.0)) return 0;        // Make sure it falls in a valid range or send a "fail" result
   sysStatus.wateringThresholdPct = tempThreshold;                          // debounce is how long we must space events to prevent overcounting
   systemStatusWriteNeeded = true;
-  snprintf(wateringThresholdPctStr,sizeof(wateringThresholdPctStr),"%2.1f %%",sysStatus.wateringThresholdPct);
+  makeUpStringMessages();
   if (sysStatus.verboseMode && sysStatus.connectedStatus) {                                                  // Publish result if feeling verbose
     Particle.publish("Threshold",wateringThresholdPctStr, PRIVATE);
   }
@@ -1147,7 +1138,7 @@ int setWaterDuration(String command)                                       // Th
   if ((tempValue < 0) | (tempValue > 1000)) return 0;        // Make sure it falls in a valid range or send a "fail" result
   sysStatus.wateringDuration = tempValue;                          // debounce is how long we must space events to prevent overcounting
   systemStatusWriteNeeded = true;
-  snprintf(wateringDurationStr,sizeof(wateringDurationStr),"%i seconds",sysStatus.wateringDuration);
+  makeUpStringMessages();
   if (sysStatus.verboseMode && sysStatus.connectedStatus) {                                                  // Publish result if feeling verbose
     Particle.publish("Duration",wateringDurationStr, PRIVATE);
   }
