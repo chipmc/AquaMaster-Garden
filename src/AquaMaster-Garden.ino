@@ -35,13 +35,14 @@
 //v5.01 - Added ability to set watering duration
 //v6.00 - Moved to Visitation code base v31 as base.  Updated base code for battery management.  Also, set charging for smaller panel
 //v6.02 - Working through minor bugs in code transition - Fixed state machine flow
+//v6.03 - Fixing some minor notifications
 
 
 // Particle Product definitions
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(6);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="6.02";
+char currentPointRelease[6] ="6.03";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -439,7 +440,7 @@ void loop()
     }
     else {
       Log.info("No watering needed at this time");
-      Particle.publish("Watering","No watering needed at this time",PRIVATE);
+      if (sysStatus.wateringThresholdPct > 0) Particle.publish("Watering","No watering needed at this time",PRIVATE);
     }
 
     state = IDLE_STATE;
@@ -735,7 +736,7 @@ void userSwitchISR() {
 
 // Power Management function
 int setPowerConfig() {
-  const int maxCurrentFromPanel = 550;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
+  const int maxCurrentFromPanel = 340;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
   SystemPowerConfiguration conf;
   System.setPowerConfiguration(SystemPowerConfiguration());  // To restore the default configuration
   if (sysStatus.solarPowerMode) {
@@ -1068,18 +1069,19 @@ int setLowPowerMode(String command)                                   // This is
  * 
  * @return 1 if able to successfully take action, 0 if invalid command
  */
-int setWaterThreshold(String command)                                       // This is the amount of time in seconds we will wait before starting a new session
+int setWaterThreshold(String command)                                  // This is the amount of time in seconds we will wait before starting a new session
 {
   char * pEND;
-  float tempThreshold = strtof(command,&pEND);                        // Looks for the first float and interprets it
-  if ((tempThreshold < 0.0) | (tempThreshold > 100.0)) return 0;        // Make sure it falls in a valid range or send a "fail" result
-  sysStatus.wateringThresholdPct = tempThreshold;                          // debounce is how long we must space events to prevent overcounting
+  float tempThreshold = strtof(command,&pEND);                         // Looks for the first float and interprets it
+  if ((tempThreshold < 0.0) | (tempThreshold > 100.0)) return 0;       // Make sure it falls in a valid range or send a "fail" result
+  sysStatus.wateringThresholdPct = tempThreshold;                      // debounce is how long we must space events to prevent overcounting
   systemStatusWriteNeeded = true;
   makeUpStringMessages();
-  if (sysStatus.verboseMode && sysStatus.connectedStatus) {                                                  // Publish result if feeling verbose
-    Particle.publish("Threshold",wateringThresholdPctStr, PRIVATE);
+  if (sysStatus.connectedStatus) {                                     // Publish result if feeling verbose
+    if (sysStatus.wateringThresholdPct == 0) Particle.publish("System","Watering function disabled",PRIVATE);
+    else Particle.publish("Threshold",wateringThresholdPctStr, PRIVATE);
   }
-  return 1;                                                           // Returns 1 to let the user know if was reset
+  return 1;                                                            // Returns 1 to let the user know if was reset
 }
 
 /**
@@ -1091,18 +1093,18 @@ int setWaterThreshold(String command)                                       // T
  * 
  * @return 1 if able to successfully take action, 0 if invalid command
  */
-int setWaterDuration(String command)                                       // This is the amount of time in seconds we will wait before starting a new session
+int setWaterDuration(String command)                                   // This is the amount of time in seconds we will wait before starting a new session
 {
   char * pEND;
-  float tempValue = strtol(command,&pEND,10);                        // Looks for the first float and interprets it
-  if ((tempValue < 0) | (tempValue > 1000)) return 0;        // Make sure it falls in a valid range or send a "fail" result
-  sysStatus.wateringDuration = tempValue;                          // debounce is how long we must space events to prevent overcounting
+  float tempValue = strtol(command,&pEND,10);                          // Looks for the first float and interprets it
+  if ((tempValue < 0) | (tempValue > 1000)) return 0;                  // Make sure it falls in a valid range or send a "fail" result
+  sysStatus.wateringDuration = tempValue;                              // debounce is how long we must space events to prevent overcounting
   systemStatusWriteNeeded = true;
   makeUpStringMessages();
-  if (sysStatus.verboseMode && sysStatus.connectedStatus) {                                                  // Publish result if feeling verbose
+  if (sysStatus.connectedStatus) {                                     // Publish result if feeling verbose
     Particle.publish("Duration",wateringDurationStr, PRIVATE);
   }
-  return 1;                                                           // Returns 1 to let the user know if was reset
+  return 1;                                                            // Returns 1 to let the user know if was reset
 }
 
 
