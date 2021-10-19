@@ -3339,15 +3339,15 @@ inline CloudDisconnectOptions& CloudDisconnectOptions::timeout(system_tick_t tim
    d557e:	f002 f98f 	bl	d78a0 <_ZN17PublishQueuePosix8instanceEv>
    d5582:	2160      	movs	r1, #96	; 0x60
    d5584:	f002 fb7c 	bl	d7c80 <_ZN17PublishQueuePosix17withFileQueueSizeEj>
-  makeUpStringMessages();                                              // Updated system settings - refresh the string messages
-   d5588:	f7ff f9b4 	bl	d48f4 <_Z20makeUpStringMessagesv>
-  setPowerConfig();                                                    // Executes commands that set up the Power configuration between Solar and DC-Powered
-   d558c:	f7ff f904 	bl	d4798 <_Z14setPowerConfigv>
   if (!digitalRead(userSwitch)) loadSystemDefaults();                  // Make sure the device wakes up and connects
-   d5590:	2004      	movs	r0, #4
-   d5592:	f006 fec3 	bl	dc31c <digitalRead>
-   d5596:	b908      	cbnz	r0, d559c <setup+0x2b4>
-   d5598:	f7ff fe50 	bl	d523c <_Z18loadSystemDefaultsv>
+   d5588:	2004      	movs	r0, #4
+   d558a:	f006 fec7 	bl	dc31c <digitalRead>
+   d558e:	b908      	cbnz	r0, d5594 <setup+0x2ac>
+   d5590:	f7ff fe54 	bl	d523c <_Z18loadSystemDefaultsv>
+  makeUpStringMessages();                                              // Updated system settings - refresh the string messages
+   d5594:	f7ff f9ae 	bl	d48f4 <_Z20makeUpStringMessagesv>
+  setPowerConfig();                                                    // Executes commands that set up the Power configuration between Solar and DC-Powered
+   d5598:	f7ff f8fe 	bl	d4798 <_Z14setPowerConfigv>
   if (Time.day() != Time.day(current.lastCountTime)) {                 // Check to see if the device was last on in a different day
    d559c:	f006 fc62 	bl	dbe64 <_ZN9TimeClass3dayEv>
    d55a0:	2100      	movs	r1, #0

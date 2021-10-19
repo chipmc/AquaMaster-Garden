@@ -36,13 +36,14 @@
 //v6.00 - Moved to Visitation code base v31 as base.  Updated base code for battery management.  Also, set charging for smaller panel
 //v6.02 - Working through minor bugs in code transition - Fixed state machine flow
 //v7.00 - Fixing some minor notifications
+//v7.01 - Make up messages AFTER loading defaults
 
 
 // Particle Product definitions
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
 PRODUCT_VERSION(7);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="7.00";
+char currentPointRelease[6] ="7.01";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -254,11 +255,12 @@ void setup()                                        // Note: Disconnected Setup(
   PublishQueuePosix::instance().withFileQueueSize(96);                 // This should last at least two days
 
   // Make up the strings to make console values easier to read
+  if (!digitalRead(userSwitch)) loadSystemDefaults();                  // Make sure the device wakes up and connects
+
   makeUpStringMessages();                                              // Updated system settings - refresh the string messages
 
   setPowerConfig();                                                    // Executes commands that set up the Power configuration between Solar and DC-Powered
 
-  if (!digitalRead(userSwitch)) loadSystemDefaults();                  // Make sure the device wakes up and connects
 
   // Here is where the code diverges based on why we are running Setup()
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over  
