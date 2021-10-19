@@ -41,6 +41,7 @@
 //v5.01 - Added ability to set watering duration
 //v6.00 - Moved to Visitation code base v31 as base.  Updated base code for battery management.  Also, set charging for smaller panel
 //v6.02 - Working through minor bugs in code transition - Fixed state machine flow
+//v7.00 - Fixing some minor notifications
 
 
 // Particle Product definitions
@@ -77,11 +78,11 @@ int setWaterDuration(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 41 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 42 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
-PRODUCT_VERSION(6);
+PRODUCT_VERSION(7);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="6.02";
+char currentPointRelease[6] ="7.00";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -775,7 +776,7 @@ void userSwitchISR() {
 
 // Power Management function
 int setPowerConfig() {
-  const int maxCurrentFromPanel = 550;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
+  const int maxCurrentFromPanel = 340;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
   SystemPowerConfiguration conf;
   System.setPowerConfiguration(SystemPowerConfiguration());  // To restore the default configuration
   if (sysStatus.solarPowerMode) {
@@ -816,8 +817,8 @@ void loadSystemDefaults() {                                         // Default s
   else setLowPowerMode("0");
   sysStatus.timezone = -5;                                          // Default is East Coast Time
   sysStatus.dstOffset = 1;
-  sysStatus.openTime = 4;
-  sysStatus.closeTime = 22;
+  sysStatus.openTime = 0;
+  sysStatus.closeTime = 24;
   sysStatus.solarPowerMode = true;  
   sysStatus.lastConnectionDuration = 0;                             // New measure
   fram.put(FRAM::systemStatusAddr,sysStatus);                       // Write it now since this is a big deal and I don't want values over written

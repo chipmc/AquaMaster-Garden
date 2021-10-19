@@ -31,11 +31,11 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING
  13 .debug_macro  00044210  00000000  00000000  002c0184  2**0
                   CONTENTS, READONLY, DEBUGGING
- 14 .debug_line   0005763f  00000000  00000000  00304394  2**0
+ 14 .debug_line   00057640  00000000  00000000  00304394  2**0
                   CONTENTS, READONLY, DEBUGGING
- 15 .debug_str    00120951  00000000  00000000  0035b9d3  2**0
+ 15 .debug_str    00120951  00000000  00000000  0035b9d4  2**0
                   CONTENTS, READONLY, DEBUGGING
- 16 .debug_frame  0000a9dc  00000000  00000000  0047c324  2**2
+ 16 .debug_frame  0000a9dc  00000000  00000000  0047c328  2**2
                   CONTENTS, READONLY, DEBUGGING
 
 Disassembly of section .text:
@@ -1472,7 +1472,7 @@ int setPowerConfig() {
    d47fc:	e7ea      	b.n	d47d4 <_Z14setPowerConfigv+0x3c>
    d47fe:	bf00      	nop
    d4800:	2003e3d8 	.word	0x2003e3d8
-   d4804:	02260226 	.word	0x02260226
+   d4804:	01540154 	.word	0x01540154
    d4808:	03840384 	.word	0x03840384
 
 000d480c <_Z17checkSystemValuesv>:
@@ -2971,8 +2971,8 @@ void loadSystemDefaults() {                                         // Default s
   sysStatus.dstOffset = 1;
    d5298:	f04f 537e 	mov.w	r3, #1065353216	; 0x3f800000
    d529c:	61a3      	str	r3, [r4, #24]
-  sysStatus.openTime = 4;
-   d529e:	f241 6304 	movw	r3, #5636	; 0x1604
+  sysStatus.openTime = 0;
+   d529e:	f44f 53c0 	mov.w	r3, #6144	; 0x1800
    d52a2:	83a3      	strh	r3, [r4, #28]
   sysStatus.solarPowerMode = true;  
    d52a4:	2101      	movs	r1, #1
@@ -3654,7 +3654,7 @@ struct __ApplicationProductVersion {
    d5844:	f006 fcea 	bl	dc21c <spark_protocol_instance>
    d5848:	2300      	movs	r3, #0
    d584a:	461a      	mov	r2, r3
-   d584c:	2106      	movs	r1, #6
+   d584c:	2107      	movs	r1, #7
    d584e:	f006 fcf5 	bl	dc23c <spark_protocol_set_product_firmware_version>
 struct currentStatus_structure {                    // currently 10 bytes long
    d5852:	4b4c      	ldr	r3, [pc, #304]	; (d5984 <_GLOBAL__sub_I___appProductID+0x160>)
