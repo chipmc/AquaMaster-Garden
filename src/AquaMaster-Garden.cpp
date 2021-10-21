@@ -43,6 +43,8 @@
 //v6.02 - Working through minor bugs in code transition - Fixed state machine flow
 //v7.00 - Fixing some minor notifications
 //v7.01 - Make up messages AFTER loading defaults
+//v8.00 - Minor update to fix some messaging issues
+//v9.00 - Reset panel to 550mA max current
 
 
 // Particle Product definitions
@@ -79,11 +81,11 @@ int setWaterDuration(String command);
 void publishStateTransition(void);
 void fullModemReset();
 void dailyCleanup();
-#line 43 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
+#line 45 "/Users/chipmc/Documents/Maker/Particle/Projects/AquaMaster-Garden/src/AquaMaster-Garden.ino"
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
-PRODUCT_VERSION(7);
+PRODUCT_VERSION(9);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="7.01";
+char currentPointRelease[6] ="9.00";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -168,7 +170,6 @@ unsigned long stayAwake;                            // Stores the time we need t
 unsigned long webhookTimeStamp = 0;                 // Webhooks...
 unsigned long resetTimeStamp = 0;                   // Resets - this keeps you from falling into a reset loop
 unsigned long lastReportedTime = 0;                 // Need to keep this separate from time so we know when to report
-char wateringThresholdPctStr[8];
 unsigned long connectionStartTime;
 
 // Program Variables
@@ -181,6 +182,7 @@ char lowPowerModeStr[16];                           // In low power mode?
 char openTimeStr[8]="NA";                           // Park Open Time
 char closeTimeStr[8]="NA";                          // Park close Time
 char currentOffsetStr[10];                          // What is our offset from UTC
+char wateringThresholdPctStr[8];
 char wateringDurationStr[16];                       // How long do we water
 bool systemStatusWriteNeeded = false;               // Keep track of when we need to write
 bool currentCountsWriteNeeded = false;
@@ -300,7 +302,6 @@ void setup()                                        // Note: Disconnected Setup(
   makeUpStringMessages();                                              // Updated system settings - refresh the string messages
 
   setPowerConfig();                                                    // Executes commands that set up the Power configuration between Solar and DC-Powered
-
 
   // Here is where the code diverges based on why we are running Setup()
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over  
@@ -778,7 +779,7 @@ void userSwitchISR() {
 
 // Power Management function
 int setPowerConfig() {
-  const int maxCurrentFromPanel = 340;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
+  const int maxCurrentFromPanel = 550;                                // Set for implmentation (550mA for 3.5W Panel, 340 for 2W panel)
   SystemPowerConfiguration conf;
   System.setPowerConfiguration(SystemPowerConfiguration());  // To restore the default configuration
   if (sysStatus.solarPowerMode) {
@@ -867,15 +868,15 @@ void checkSystemValues() {                                          // Checks to
   * 
   */
 void makeUpStringMessages() {
-  // Special case for 24 hour operations
-  if (sysStatus.openTime == 0 && sysStatus.closeTime == 24) {
+
+  if (sysStatus.openTime == 0 && sysStatus.closeTime == 24) {                         // Special case for 24 hour operations
     snprintf(openTimeStr, sizeof(openTimeStr), "NA");
     snprintf(closeTimeStr, sizeof(closeTimeStr), "NA");
-    return;
   }
-  // Open and Close Times
-  snprintf(openTimeStr, sizeof(openTimeStr), "%i:00", sysStatus.openTime);
-  snprintf(closeTimeStr, sizeof(closeTimeStr), "%i:00", sysStatus.closeTime);
+  else {
+    snprintf(openTimeStr, sizeof(openTimeStr), "%i:00", sysStatus.openTime);           // Open and Close Times
+    snprintf(closeTimeStr, sizeof(closeTimeStr), "%i:00", sysStatus.closeTime);
+  }
 
   // Low Power Mode String
   if (sysStatus.lowPowerMode) strncpy(lowPowerModeStr,"Low Power", sizeof(lowPowerModeStr));
@@ -1090,11 +1091,14 @@ int setLowPowerMode(String command)                                   // This is
   else if (command == "0")                                            // Command calls for clearing lowPowerMode
   {
     sysStatus.lowPowerMode = false;
-    makeUpStringMessages();
+    makeUpStringMessages();                                           // Updated system settings - refresh the string messages
     if (!sysStatus.connectedStatus) {                                 // In case we are not connected, we will do so now.
       state = CONNECTING_STATE;                                       // Will connect - if connection fails, will need to reset device
     }
-    else Particle.publish("Mode",lowPowerModeStr, PRIVATE);
+    else {
+      meterParticlePublish();
+      Particle.publish("Mode",lowPowerModeStr, PRIVATE);
+    }
   }
   systemStatusWriteNeeded = true;
   return 1;
@@ -1117,12 +1121,12 @@ int setWaterThreshold(String command)                                  // This i
   float tempThreshold = strtof(command,&pEND);                         // Looks for the first float and interprets it
   if ((tempThreshold < 0.0) | (tempThreshold > 100.0)) return 0;       // Make sure it falls in a valid range or send a "fail" result
   sysStatus.wateringThresholdPct = tempThreshold;                      // debounce is how long we must space events to prevent overcounting
-  systemStatusWriteNeeded = true;
   makeUpStringMessages();
   if (sysStatus.connectedStatus) {                                     // Publish result if feeling verbose
     if (sysStatus.wateringThresholdPct == 0) Particle.publish("System","Watering function disabled",PRIVATE);
     else Particle.publish("Threshold",wateringThresholdPctStr, PRIVATE);
   }
+  systemStatusWriteNeeded = true;
   return 1;                                                            // Returns 1 to let the user know if was reset
 }
 
@@ -1141,11 +1145,11 @@ int setWaterDuration(String command)                                   // This i
   float tempValue = strtol(command,&pEND,10);                          // Looks for the first float and interprets it
   if ((tempValue < 0) | (tempValue > 1000)) return 0;                  // Make sure it falls in a valid range or send a "fail" result
   sysStatus.wateringDuration = tempValue;                              // debounce is how long we must space events to prevent overcounting
-  systemStatusWriteNeeded = true;
   makeUpStringMessages();
   if (sysStatus.connectedStatus) {                                     // Publish result if feeling verbose
     Particle.publish("Duration",wateringDurationStr, PRIVATE);
   }
+  systemStatusWriteNeeded = true;
   return 1;                                                            // Returns 1 to let the user know if was reset
 }
 
