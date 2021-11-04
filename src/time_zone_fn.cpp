@@ -90,7 +90,7 @@ bool isDSTusa() {
     return false;
   }
 
-  boolean beforeFirstSunday = (dayOfMonth - dayOfWeek < 0);
+  boolean beforeFirstSunday = (dayOfMonth - dayOfWeek <= 0);
   boolean secondSundayOrAfter = (dayOfMonth - dayOfWeek > 7);
 
   if (beforeFirstSunday && !secondSundayOrAfter) return (month == 11);

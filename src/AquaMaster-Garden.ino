@@ -39,13 +39,14 @@
 //v7.01 - Make up messages AFTER loading defaults
 //v8.00 - Minor update to fix some messaging issues
 //v9.00 - Reset panel to 550mA max current
+//v10.00 - Added a toggle for sensor power, adjusted sensor on-time and watering logic
 
 
 // Particle Product definitions
 PRODUCT_ID(PLATFORM_ID);                            // No longer need to specify - but device needs to be added to product ahead of time.
-PRODUCT_VERSION(9);
+PRODUCT_VERSION(10);
 #define DSTRULES isDSTusa
-char currentPointRelease[6] ="9.00";
+char currentPointRelease[6] ="10.00";
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
@@ -118,7 +119,8 @@ const int wakeUpPin =     D8;                       // This is the Particle Elec
 const int blueLED =       D7;                       // This LED is on the Electron itself
 const int userSwitch =    D4;                       // User switch with a pull-up resistor
 // Pin Constants - Sensor
-const int soilPin =       A0;                      // Pressure Sensor inerrupt pin
+const int soilPin =       A0;                       // Pressure Sensor inerrupt pin
+const int sensorPower =   A2;                       // Turns on the sensor
 
 // Timing Variables
 const int wakeBoundary = 1*3600 + 0*60 + 0;         // 1 hour 0 minutes 0 seconds
@@ -163,11 +165,14 @@ Timer wateringTimer(600000, wateringTimerISR, true);      // 10 minute timer, ca
 
 void setup()                                        // Note: Disconnected Setup()
 {
+delay(2000);
+
   pinMode(wakeUpPin,INPUT);                         // This pin is active HIGH
   pinMode(userSwitch,INPUT);                        // Momentary contact button on board for direct user input
   pinMode(blueLED, OUTPUT);                         // declare the Blue LED Pin as an output
-  
+  pinMode(sensorPower,OUTPUT);
   digitalWrite(blueLED,HIGH);                       // Turn on the led so we can see how long the Setup() takes
+  digitalWrite(sensorPower,LOW);                    // Turn off the sensor by default
 
   char responseTopic[125];
   String deviceID = System.deviceID();                                 // Multiple devices share the same hook - keeps things straight
@@ -175,6 +180,8 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.subscribe(responseTopic, UbidotsHandler, MY_DEVICES);       // Subscribe to the integration response event
   System.on(firmware_update, firmwareUpdateHandler);                   // Registers a handler that will track if we are getting an update
   System.on(out_of_memory, outOfMemoryHandler);                        // Enabling an out of memory handler is a good safety tip. If we run out of memory a System.reset() is done.
+
+  delay(1000);
 
   Particle.variable("SoilMoisture", current.soilMoisture);             // Note: Don't have to be connected for any of this!!!
   Particle.variable("Signal", SignalString);
@@ -237,6 +244,10 @@ void setup()                                        // Note: Disconnected Setup(
 
   checkSystemValues();                                                 // Make sure System values are all in valid range
 
+  // Publish Queue Posix is used exclusively for sending webhooks in order to conserve RAM and reduce writes / wear
+  PublishQueuePosix::instance().setup();                               // Tend to the queue
+ 
+
   if (current.updateAttempts >= 3) {
     char data[64];
     System.disableUpdates();                                           // We will only try to update three times in a day 
@@ -251,10 +262,8 @@ void setup()                                        // Note: Disconnected Setup(
   Time.zone(sysStatus.timezone);                                       // Set the Time Zone for our device
   snprintf(currentOffsetStr,sizeof(currentOffsetStr),"%2.1f UTC",(Time.local() - Time.now()) / 3600.0);   // Load the offset string
   
-  // Publish Queue Posix is used exclusively for sending webhooks in order to conserve RAM and reduce writes / wear
-  PublishQueuePosix::instance().setup();                               // Tend to the queue
-  PublishQueuePosix::instance().withRamQueueSize(0);                   // Writes to memory immediately
-  PublishQueuePosix::instance().withFileQueueSize(96);                 // This should last at least two days
+
+
 
   // Make up the strings to make console values easier to read
   if (!digitalRead(userSwitch)) loadSystemDefaults();                  // Make sure the device wakes up and connects
@@ -320,8 +329,10 @@ void loop()
 
     if (Time.hour() > sysStatus.openTime && Time.hour() < sysStatus.closeTime && current.soilMoisture < sysStatus.wateringThresholdPct) {
       current.solenoidState = true;                                     // This sets a flag that indicates watering is needed
-      currentCountsWriteNeeded = true;
     }
+    else current.solenoidState = false;
+
+    currentCountsWriteNeeded = true;
   
     state = REPORTING_STATE;
     break;
@@ -539,7 +550,7 @@ void loop()
     System.reset();                                                    // An out of memory condition occurred - reset device.
   }
 
-  if (sysStatus.connectedStatus && !Particle.connected()) {            // If the system thinks we are connected, let's make sure that we are
+  if ((sysStatus.connectedStatus || !sysStatus.lowPowerMode) && !Particle.connected() && state != CONNECTING_STATE) {            // If the system thinks we are connected, let's make sure that we are
     state = CONNECTING_STATE;                                          // Go the connecting state - that way we will have limits on connection attempt duration
     sysStatus.connectedStatus = false;                                 // At least for now, this is the correct state value
     Log.info("Particle connection failed, reverting to the connecting state");
@@ -632,9 +643,11 @@ void firmwareUpdateHandler(system_event_t event, int param) {
 // These are the functions that are part of the takeMeasurements call
 void takeMeasurements()
 {
-  if (Cellular.ready()) getSignalStrength();                          // Test signal strength if the cellular modem is on and ready
+  digitalWrite(sensorPower,HIGH);                                      // Let's turn on the sensor
+  delay(1000);                                                         // Give it a second to warm up (manual says 100mSec needed)
+  if (Cellular.ready()) getSignalStrength();                           // Test signal strength if the cellular modem is on and ready
 
-  getTemperature();                                                   // Get Temperature at startup as well
+  getTemperature();                                                    // Get Temperature at startup as well
   
   // Battery Releated actions
   sysStatus.batteryState = System.batteryState();                      // Call before isItSafeToCharge() as it may overwrite the context
@@ -665,7 +678,9 @@ void takeMeasurements()
   else sysStatus.lowBatteryMode = false;                               // We have sufficient to continue operations                          
 
 
-  current.soilMoisture = map(analogRead(soilPin),0,3722,0,100);      // Sensor puts out 0-3V for 0% to 100% soil moisuture
+  current.soilMoisture = map(analogRead(soilPin),0,3722,0,100);        // Sensor puts out 0-3V for 0% to 100% soil moisuture
+
+  digitalWrite(sensorPower,LOW);                                        // Turn off the sensor when we sleep
   
   systemStatusWriteNeeded = true;
   currentCountsWriteNeeded = true;
